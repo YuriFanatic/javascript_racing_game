@@ -28,20 +28,15 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
 
-        
-        // Load car images
         const carImages = {
             straight: new Image(),
             left: new Image(),
             right: new Image()
         };
-
-        // Set the source for the images
-        carImages.straight.src = 'car_straight.png'; // Replace with your image path
-        carImages.left.src = 'car_left.png';       // Replace with your image path
+        carImages.straight.src = 'car_straight.png';
+        carImages.left.src = 'car_left.png';
         carImages.right.src = 'car_right.png';
 
-        // Game states
         const STATE_START = 1;
         const STATE_RESTART = 2;
         const STATE_PLAY = 3;
@@ -50,25 +45,64 @@
         var state = STATE_START;
         var gamePaused = false;
 
-        // Game variables
         let carPos = 0;
         let carSpeed = 0;
         let trackCurvature = 0;
+        let trackElevation = 0;
         let playerCurvature = 0;
         let distanceTravelled = 0;
+        // elevation: -1 (downhill) to 1 (uphill), 0 = flat
         const track = [
-        { curvature: 0, length: 200 },
-        { curvature: 1, length: 300 },
-        { curvature: 0, length: 400 },
-        { curvature: -1, length: 100 },
-        { curvature: 0, length: 200 },
-        { curvature: -1, length: 100 },
-        { curvature: 1, length: 100 },
-        { curvature: 0, length: 200 }
+        { curvature: 0, length: 200, elevation: 0 },
+        { curvature: 1, length: 300, elevation: 0 },
+        { curvature: 0, length: 400, elevation: 1 },
+        { curvature: -1, length: 100, elevation: 0 },
+        { curvature: 0, length: 200, elevation: -1 },
+        { curvature: -1, length: 100, elevation: 0 },
+        { curvature: 1, length: 100, elevation: 0 },
+        { curvature: 0, length: 200, elevation: 0 }
         ];
         let totalTrackDistance = track.reduce((sum, section) => sum + section.length, 0);
 
-        // Input handling
+        // Horizon shifts as one unit with elevation; any scale is safe from
+        // row gaps/crossing -- this just caps how far it can move.
+        const ELEVATION_SCALE = 0.2;
+
+        // Parallax divisors: smaller = shifts more with curvature = closer.
+        const SUN_PARALLAX = canvas.width / 20;
+        const MOUNTAIN_PARALLAX_FAR = canvas.width / 8;
+        const MOUNTAIN_PARALLAX_NEAR = canvas.width / 3;
+        const MOUNTAIN_HEIGHT_FAR = canvas.height * 0.48;
+        const MOUNTAIN_HEIGHT_NEAR = canvas.height * 0.29;
+
+        // Mountain silhouettes: x/h as fractions of canvas width / layer
+        // height. x runs outside [0,1] so a ridge still covers the full
+        // width once shifted.
+        const mountainPeaksFar = [
+            { x: -0.35, h: 0.15 },
+            { x: 0.00, h: 0.40 },
+            { x: 0.12, h: 0.22 },
+            { x: 0.26, h: 0.50 },
+            { x: 0.38, h: 0.20 },
+            { x: 0.50, h: 0.34 },
+            { x: 0.63, h: 0.46 },
+            { x: 0.76, h: 0.24 },
+            { x: 0.89, h: 0.42 },
+            { x: 1.00, h: 0.22 },
+            { x: 1.35, h: 0.30 },
+        ];
+        const mountainPeaksNear = [
+            { x: -0.5, h: 0.30 },
+            { x: 0.05, h: 0.65 },
+            { x: 0.22, h: 0.35 },
+            { x: 0.40, h: 0.55 },
+            { x: 0.58, h: 0.25 },
+            { x: 0.75, h: 0.60 },
+            { x: 0.90, h: 0.32 },
+            { x: 1.05, h: 0.50 },
+            { x: 1.5, h: 0.28 },
+        ];
+
         const keys = {
         ArrowUp: false,
         ArrowLeft: false,
@@ -84,68 +118,98 @@
         });
 
         function update(elapsedTime) {
-            // Speed control
             if (keys.ArrowUp) carSpeed += 0.1;
             else carSpeed -= 0.01;
 
             if (carSpeed < 0) carSpeed = 0;
             if (carSpeed > 1) carSpeed = 1;
 
-            // Steering control
-            let steeringFactor = 0.005;  // Adjust this value to control how sharp the car steers
+            let steeringFactor = 0.005;
             if (keys.ArrowLeft) playerCurvature -= steeringFactor;
             if (keys.ArrowRight) playerCurvature += steeringFactor;
 
-            distanceTravelled += carSpeed * 200 * elapsedTime; //moves car forwards
-
-            // loops track
+            distanceTravelled += carSpeed * 200 * elapsedTime;
             if (distanceTravelled >= totalTrackDistance) {
                 distanceTravelled -= totalTrackDistance;
             }
 
             let offset = 0;
             let currentTrackSection = 0;
-
-            // identifies current track segment
             while (currentTrackSection < track.length && offset <= distanceTravelled) {
                 offset += track[currentTrackSection].length;
                 currentTrackSection++;
             }
 
-            //bends track
             const targetCurvature = track[currentTrackSection - 1].curvature;
-            const curveDifference = (targetCurvature - trackCurvature) * elapsedTime * carSpeed;
-            trackCurvature += curveDifference;
+            trackCurvature += (targetCurvature - trackCurvature) * elapsedTime * carSpeed;
+
+            const targetElevation = track[currentTrackSection - 1].elevation;
+            trackElevation += (targetElevation - trackElevation) * elapsedTime * carSpeed;
 
             // slows down on grass
-            if (Math.abs(playerCurvature - trackCurvature) >= 0.6) {
+            if (Math.abs(playerCurvature - trackCurvature) >= 0.7) {
             carSpeed -= 0.2;
-            if (carSpeed < 0) carSpeed = 0; // Ensures speed does not go negative
+            if (carSpeed < 0) carSpeed = 0;
             }
-
         }
 
+        // One mountain layer. Shifts horizontally with curvature (parallax
+        // controls how fast). Base runs to the bottom of the canvas, not
+        // just to horizonY, so a shrunken ground area on an uphill never
+        // exposes bare sky under the ridge.
+        function drawMountains(horizonY, peaks, parallax, maxHeight, color) {
+            const shiftX = -trackCurvature * parallax;
+            const firstX = peaks[0].x * canvas.width + shiftX;
+            const lastX = peaks[peaks.length - 1].x * canvas.width + shiftX;
+
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(firstX, canvas.height);
+            ctx.lineTo(firstX, horizonY - peaks[0].h * maxHeight);
+            for (const peak of peaks) {
+                ctx.lineTo(peak.x * canvas.width + shiftX, horizonY - peak.h * maxHeight);
+            }
+            ctx.lineTo(lastX, canvas.height);
+            ctx.closePath();
+            ctx.fill();
+        }
 
         function draw() {
-            // Draw sky
-            const skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height / 2);
-            skyGradient.addColorStop(0, 'indianred'); // Color at the top
-            skyGradient.addColorStop(1, 'lightpink'); // Color at the bottom
-            ctx.fillStyle = skyGradient;
-            ctx.fillRect(0, 0, canvas.width, canvas.height / 2);
+            // Redraw from scratch each frame -- rows move with elevation,
+            // so without a full clear old pixels would linger as ghosts.
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // Draw sun that interpolates horizontally with the road
-            let sunX = canvas.width / 2 - (trackCurvature) * canvas.width / 20;
+            // Rounded to a whole pixel: a fractional horizonY makes every
+            // 1px row straddle two physical pixel rows, and since the
+            // canvas starts transparent, the antialiased edges of adjacent
+            // rows don't fully composite back to opaque -- a flicker as
+            // trackElevation eases through fractional values.
+            let horizonY = Math.round(canvas.height / 2 + trackElevation * (canvas.height * ELEVATION_SCALE));
+            let groundHeight = canvas.height - horizonY;
+
+            const skyGradient = ctx.createLinearGradient(0, 0, 0, horizonY);
+            skyGradient.addColorStop(0, 'indianred');
+            skyGradient.addColorStop(1, 'lightpink');
+            ctx.fillStyle = skyGradient;
+            ctx.fillRect(0, 0, canvas.width, horizonY);
+
+            // Sun and mountains sit at a fixed sky height -- only the road
+            // itself should rise/fall with elevation.
+            const skyAnchorY = canvas.height / 2;
+
+            let sunX = canvas.width / 2 - trackCurvature * SUN_PARALLAX;
+            let sunY = canvas.height * 0.42;
             ctx.fillStyle = 'gold';
             ctx.beginPath();
-            ctx.arc(sunX, canvas.height / 2, 30, 0, Math.PI * 2); // Draw sun
+            ctx.arc(sunX, sunY, 30, 0, Math.PI * 2);
             ctx.fill();
 
-            // Draw road and grass with rumble strips
-            for (let y = 0; y < canvas.height / 2; y++) {
-                let perspective = y / (canvas.height / 2);
-                let roadWidth = 0.1 + perspective * 0.6;
-                roadWidth *= 0.5;
+            drawMountains(skyAnchorY, mountainPeaksFar, MOUNTAIN_PARALLAX_FAR, MOUNTAIN_HEIGHT_FAR, '#7a5c74');
+            drawMountains(skyAnchorY, mountainPeaksNear, MOUNTAIN_PARALLAX_NEAR, MOUNTAIN_HEIGHT_NEAR, '#5c4560');
+
+            for (let y = 0; y < groundHeight; y++) {
+                let perspective = y / groundHeight;
+                let roadWidth = (0.1 + perspective * 0.6) * 0.5;
 
                 let middle = 0.5 + trackCurvature * Math.pow((1.0 - perspective), 3);
                 let leftGrass = (middle - roadWidth * 1.2) * canvas.width;
@@ -153,37 +217,25 @@
                 let roadLeft = (middle - roadWidth) * canvas.width;
                 let roadRight = (middle + roadWidth) * canvas.width;
 
+                let rowY = horizonY + y;
 
-                // Create the illusion of speed by shifting the grass segments
-                let grassSpeedFactor = 10; 
-                let movingY = y + (distanceTravelled * grassSpeedFactor) % 20;  // Moving down effect
-
-                // Calculate alternating grass segments, with larger segments as they get closer
-                let grassFrequency = 20 * Math.pow(1 - perspective, 3); // Larger segments closer
+                // Alternating grass bands, wider apart the closer they are.
+                let grassFrequency = 20 * Math.pow(1 - perspective, 3);
                 let grassColor = Math.sin(grassFrequency + distanceTravelled * 0.1) > 0 ? 'green' : 'darkgreen';
-
-                // Draw the grass
                 ctx.fillStyle = grassColor;
-                ctx.fillRect(0, canvas.height / 2 + y, leftGrass, 1);
-                ctx.fillRect(rightGrass, canvas.height / 2 + y, canvas.width - rightGrass, 1);
+                ctx.fillRect(0, rowY, leftGrass, 1);
+                ctx.fillRect(rightGrass, rowY, canvas.width - rightGrass, 1);
 
-                // Draw rumble strips between the road and grass on both sides
                 let rumbleWidth = 4 * (1 + perspective * 7);
                 ctx.fillStyle = (Math.sin(grassFrequency + distanceTravelled * 0.3) > 0) ? 'red' : 'white';
+                ctx.fillRect(roadLeft - rumbleWidth, rowY, rumbleWidth, 1);
+                ctx.fillRect(roadRight, rowY, rumbleWidth, 1);
 
-                // draw rumble strips
-                ctx.fillRect(roadLeft - rumbleWidth, canvas.height / 2 + y, rumbleWidth, 1);
-                ctx.fillRect(roadRight, canvas.height / 2 + y, rumbleWidth, 1); 
-
-                // Draw the road
                 ctx.fillStyle = 'grey';
-                ctx.fillRect(roadLeft, canvas.height / 2 + y, roadRight - roadLeft, 1);
+                ctx.fillRect(roadLeft, rowY, roadRight - roadLeft, 1);
             }
 
-
-            // Draw car
             let carX = canvas.width / 2 - 20 + (playerCurvature - trackCurvature) * canvas.width / 2;
-
             if (keys.ArrowLeft) {
                 ctx.drawImage(carImages.left, carX, canvas.height - 30, 40, 20);
             } else if (keys.ArrowRight) {
